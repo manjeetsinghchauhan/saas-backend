@@ -1,0 +1,16 @@
+{
+    "auth": {
+      "register_success": "उपयोगकर्ता सफलतापूर्वक पंजीकृत हुआ।",
+      "login_success": "लॉगिन सफल रहा।",
+      "invalid_credentials": "अमान्य ईमेल या पासवर्ड।",
+      "user_already_exists": "इस ईमेल के साथ उपयोगकर्ता पहले से मौजूद है",
+      "validation_error": "सत्यापन त्रुटि हुई",
+      "registration_failed": "पंजीकरण विफल रहा",
+      "login_failed": "लॉगिन विफल रहा"
+    },
+    "validation": {
+      "email_required": "ईमेल आवश्यक है",
+      "password_required": "पासवर्ड आवश्यक है"
+    }
+  }
+  

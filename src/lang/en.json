@@ -1,0 +1,27 @@
+{
+    "auth": {
+      "register_success": "User registered successfully",
+      "login_success": "Login successful",
+      "invalid_credentials": "Invalid email or password",
+      "user_already_exists": "User with this email already exists",
+      "validation_error": "Validation error occurred",
+      "registration_failed": "Registration failed",
+      "login_failed": "Login failed"
+    },
+    "project": {
+      "created": "Project created successfully",
+      "createFailed": "Failed to create project",
+      "list": "Project list retrieved successfully",
+      "listFailed": "Failed to fetch project list",
+      "retrieved": "Project retrieved successfully",
+      "retrieveFailed": "Failed to retrieve project"
+    },
+    "validation": {
+      "email_required": "Email is required",
+      "password_required": "Password is required",
+      "string": "Value must be a string",
+      "min": "Value must have at least {{min}} characters",
+      "required": "This field is required"
+    }
+  }
+  

@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Test - SaaS POC</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .chat-container {
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .message {
+            background: #f0f0f0;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .message.sent {
+            background: #d4edda;
+            text-align: right;
+        }
+        .message.received {
+            background: #f8d7da;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        input, button {
+            padding: 8px;
+            margin: 5px;
+        }
+        .status {
+            color: #666;
+            font-style: italic;
+        }
+        .online-users {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chat Test - SaaS POC</h1>
+    
+    <div class="chat-container">
+        <h3>Connection Setup</h3>
+        <div class="input-group">
+            <label for="token">JWT Token:</label>
+            <input type="text" id="token" placeholder="Enter your JWT token" style="width: 400px;">
+            <button onclick="connect()">Connect</button>
+        </div>
+        <div class="status" id="connectionStatus">Not connected</div>
+    </div>
+
+    <div class="chat-container">
+        <h3>Send Message</h3>
+        <div class="input-group">
+            <label for="recipientId">Recipient ID:</label>
+            <input type="text" id="recipientId" placeholder="Enter recipient user ID">
+        </div>
+        <div class="input-group">
+            <label for="messageBody">Message:</label>
+            <input type="text" id="messageBody" placeholder="Enter your message" style="width: 300px;">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <div class="chat-container">
+        <h3>Chat History</h3>
+        <div class="input-group">
+            <label for="historyRecipientId">Recipient ID:</label>
+            <input type="text" id="historyRecipientId" placeholder="Enter recipient user ID">
+            <button onclick="getChatHistory()">Get History</button>
+        </div>
+        <div id="chatHistory"></div>
+    </div>
+
+    <div class="chat-container">
+        <h3>Online Users</h3>
+        <button onclick="getOnlineUsers()">Refresh Online Users</button>
+        <div id="onlineUsers"></div>
+    </div>
+
+    <div class="chat-container">
+        <h3>Real-time Messages</h3>
+        <div id="realtimeMessages"></div>
+    </div>
+
+    <script>
+        let socket = null;
+        let currentUser = null;
+        let serverConfig = null;
+
+        // Fetch server configuration on page load
+        async function loadServerConfig() {
+            try {
+                const response = await fetch('/api/v1/config');
+                serverConfig = await response.json();
+                console.log('Server config loaded:', serverConfig);
+            } catch (error) {
+                console.error('Failed to load server config:', error);
+                // Fallback to current origin
+                serverConfig = {
+                    socketUrl: window.location.origin
+                };
+            }
+        }
+
+        // Load config when page loads
+        loadServerConfig();
+
+        function connect() {
+            const token = document.getElementById('token').value;
+            if (!token) {
+                alert('Please enter a JWT token');
+                return;
+            }
+
+            if (!serverConfig) {
+                alert('Server configuration not loaded. Please refresh the page.');
+                return;
+            }
+
+            try {
+                socket = io(serverConfig.socketUrl, {
+                    auth: { token: token }
+                });
+
+                socket.on('connect', () => {
+                    document.getElementById('connectionStatus').textContent = 'Connected successfully!';
+                    document.getElementById('connectionStatus').style.color = 'green';
+                });
+
+                socket.on('disconnect', () => {
+                    document.getElementById('connectionStatus').textContent = 'Disconnected';
+                    document.getElementById('connectionStatus').style.color = 'red';
+                });
+
+                socket.on('new_message', (data) => {
+                    addRealtimeMessage('Received', data);
+                });
+
+                socket.on('message_sent', (data) => {
+                    addRealtimeMessage('Sent', data);
+                });
+
+                socket.on('user_online', (data) => {
+                    addRealtimeMessage('System', { body: `User ${data.displayName || data.email} is now online` });
+                });
+
+                socket.on('user_offline', (data) => {
+                    addRealtimeMessage('System', { body: `User ${data.userId} is now offline` });
+                });
+
+                socket.on('user_typing', (data) => {
+                    addRealtimeMessage('System', { body: `${data.displayName || data.email} is typing...` });
+                });
+
+                socket.on('user_stopped_typing', (data) => {
+                    addRealtimeMessage('System', { body: `User ${data.userId} stopped typing` });
+                });
+
+                socket.on('connect_error', (error) => {
+                    document.getElementById('connectionStatus').textContent = 'Connection failed: ' + error.message;
+                    document.getElementById('connectionStatus').style.color = 'red';
+                });
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                document.getElementById('connectionStatus').textContent = 'Connection error: ' + error.message;
+                document.getElementById('connectionStatus').style.color = 'red';
+            }
+        }
+
+        function sendMessage() {
+            const recipientId = document.getElementById('recipientId').value;
+            const body = document.getElementById('messageBody').value;
+
+            if (!recipientId || !body) {
+                alert('Please enter both recipient ID and message');
+                return;
+            }
+
+            if (socket && socket.connected) {
+                socket.emit('private_message', {
+                    recipientId: recipientId,
+                    body: body
+                });
+                document.getElementById('messageBody').value = '';
+            } else {
+                alert('Not connected to chat server');
+            }
+        }
+
+        function getChatHistory() {
+            const recipientId = document.getElementById('historyRecipientId').value;
+            const token = document.getElementById('token').value;
+
+            if (!recipientId || !token) {
+                alert('Please enter both recipient ID and token');
+                return;
+            }
+
+            fetch(`/api/v1/chat/history?recipientId=${recipientId}`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayChatHistory(data.data);
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error fetching chat history');
+            });
+        }
+
+        function getOnlineUsers() {
+            const token = document.getElementById('token').value;
+
+            if (!token) {
+                alert('Please enter a JWT token');
+                return;
+            }
+
+            fetch('/api/v1/chat/online-users', {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayOnlineUsers(data.data);
+                } else {
+                    alert('Error: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error fetching online users');
+            });
+        }
+
+        function displayChatHistory(messages) {
+            const container = document.getElementById('chatHistory');
+            container.innerHTML = '';
+
+            messages.forEach(message => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${message.from_user.id === currentUser ? 'sent' : 'received'}`;
+                messageDiv.innerHTML = `
+                    <strong>${message.from_user.display_name || message.from_user.email}</strong><br>
+                    ${message.body}<br>
+                    <small>${new Date(message.created_at).toLocaleString()}</small>
+                `;
+                container.appendChild(messageDiv);
+            });
+        }
+
+        function displayOnlineUsers(users) {
+            const container = document.getElementById('onlineUsers');
+            container.innerHTML = '';
+
+            users.forEach(user => {
+                const userDiv = document.createElement('div');
+                userDiv.innerHTML = `
+                    <strong>${user.display_name || user.email}</strong> 
+                    <span style="color: ${user.online ? 'green' : 'red'}">(${user.online ? 'Online' : 'Offline'})</span>
+                `;
+                container.appendChild(userDiv);
+            });
+        }
+
+        function addRealtimeMessage(type, data) {
+            const container = document.getElementById('realtimeMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type.toLowerCase()}`;
+            messageDiv.innerHTML = `
+                <strong>${type}</strong><br>
+                ${data.body || JSON.stringify(data)}<br>
+                <small>${new Date().toLocaleString()}</small>
+            `;
+            container.appendChild(messageDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Extract user info from JWT token
+        function parseJWT(token) {
+            try {
+                const base64Url = token.split('.')[1];
+                const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+                    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+                return JSON.parse(jsonPayload);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Auto-extract user info when token is entered
+        document.getElementById('token').addEventListener('input', function() {
+            const token = this.value;
+            const payload = parseJWT(token);
+            if (payload) {
+                currentUser = payload.id;
+                console.log('Current user ID:', currentUser);
+            }
+        });
+    </script>
+</body>
+</html> 

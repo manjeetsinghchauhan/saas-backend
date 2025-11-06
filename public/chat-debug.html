@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Debug Test</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .input-group {
+            margin: 10px 0;
+        }
+        input, textarea, button {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .success { background-color: #d4edda; color: #155724; }
+        .log {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .user-list {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .user-item {
+            background-color: #e9ecef;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .user-item:hover {
+            background-color: #dee2e6;
+        }
+        .user-item.selected {
+            background-color: #007bff;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chat Debug Test</h1>
+    
+    <div class="container">
+        <h3>Connection</h3>
+        <div class="input-group">
+            <label>JWT Token:</label>
+            <input type="text" id="token" placeholder="Enter your JWT token" style="width: 400px;">
+        </div>
+        <div class="input-group">
+            <button onclick="connect()">Connect</button>
+            <button onclick="disconnect()">Disconnect</button>
+        </div>
+        <div id="connectionStatus" class="status disconnected">Disconnected</div>
+    </div>
+
+    <div class="container">
+        <h3>Chat</h3>
+        <div class="input-group">
+            <label>Recipient ID:</label>
+            <input type="text" id="recipientId" placeholder="Enter recipient user ID">
+        </div>
+        <div class="input-group">
+            <label>Message:</label>
+            <textarea id="message" placeholder="Enter your message" rows="3" style="width: 100%;"></textarea>
+        </div>
+        <div class="input-group">
+            <button onclick="sendMessage()">Send Message</button>
+            <button onclick="startTyping()">Start Typing</button>
+            <button onclick="stopTyping()">Stop Typing</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>Online Users</h3>
+        <div id="onlineUsers" class="user-list"></div>
+        <button onclick="refreshOnlineUsers()">Refresh</button>
+    </div>
+
+    <div class="container">
+        <h3>Event Log</h3>
+        <div id="eventLog" class="log"></div>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <script>
+        let socket = null;
+        let onlineUsers = [];
+        let serverConfig = null;
+
+        // Fetch server configuration on page load
+        async function loadServerConfig() {
+            try {
+                const response = await fetch('/api/v1/config');
+                serverConfig = await response.json();
+                console.log('Server config loaded:', serverConfig);
+            } catch (error) {
+                console.error('Failed to load server config:', error);
+                // Fallback to current origin
+                serverConfig = {
+                    socketUrl: window.location.origin
+                };
+            }
+        }
+
+        // Load config when page loads
+        loadServerConfig();
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('eventLog');
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> ${message}`;
+            if (type === 'error') logEntry.style.color = 'red';
+            if (type === 'success') logEntry.style.color = 'green';
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function connect() {
+            const token = document.getElementById('token').value.trim();
+            if (!token) {
+                alert('Please enter a JWT token');
+                return;
+            }
+
+            if (!serverConfig) {
+                alert('Server configuration not loaded. Please refresh the page.');
+                return;
+            }
+
+            try {
+                socket = io(serverConfig.socketUrl, {
+                    auth: { token: token }
+                });
+
+                socket.on('connect', () => {
+                    log('✅ Connected to server', 'success');
+                    document.getElementById('connectionStatus').textContent = 'Connected';
+                    document.getElementById('connectionStatus').className = 'status connected';
+                    
+                    // Refresh online users after connection
+                    setTimeout(() => refreshOnlineUsers(), 1000);
+                });
+
+                socket.on('disconnect', () => {
+                    log('❌ Disconnected from server', 'error');
+                    document.getElementById('connectionStatus').textContent = 'Disconnected';
+                    document.getElementById('connectionStatus').className = 'status disconnected';
+                });
+
+                socket.on('connect_error', (error) => {
+                    log(`❌ Connection error: ${error.message}`, 'error');
+                });
+
+                socket.on('user_online', (data) => {
+                    log(`🟢 User online: ${data.displayName} (${data.email})`, 'success');
+                    refreshOnlineUsers();
+                });
+
+                socket.on('user_offline', (data) => {
+                    log(`🔴 User offline: ${data.userId}`, 'error');
+                    refreshOnlineUsers();
+                });
+
+                socket.on('new_message', (data) => {
+                    log(`💬 New message from ${data.from_user.display_name}: ${data.body}`, 'success');
+                });
+
+                socket.on('message_sent', (data) => {
+                    log(`✅ Message sent to ${data.recipientId}`, 'success');
+                });
+
+                socket.on('user_typing', (data) => {
+                    log(`⌨️ ${data.displayName} is typing...`, 'info');
+                });
+
+                socket.on('user_stopped_typing', (data) => {
+                    log(`⏹️ ${data.displayName} stopped typing`, 'info');
+                });
+
+            } catch (error) {
+                log(`❌ Error connecting: ${error.message}`, 'error');
+            }
+        }
+
+        function disconnect() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        }
+
+        function sendMessage() {
+            if (!socket || !socket.connected) {
+                alert('Please connect first');
+                return;
+            }
+
+            const recipientId = document.getElementById('recipientId').value.trim();
+            const message = document.getElementById('message').value.trim();
+
+            if (!recipientId || !message) {
+                alert('Please enter both recipient ID and message');
+                return;
+            }
+
+            log(`📤 Sending message to ${recipientId}: ${message}`);
+            
+            socket.emit('private_message', {
+                recipientId: recipientId,
+                body: message,
+                projectId: null
+            });
+
+            document.getElementById('message').value = '';
+        }
+
+        function startTyping() {
+            if (!socket || !socket.connected) {
+                alert('Please connect first');
+                return;
+            }
+
+            const recipientId = document.getElementById('recipientId').value.trim();
+            if (!recipientId) {
+                alert('Please enter recipient ID');
+                return;
+            }
+
+            log(`⌨️ Starting typing indicator for ${recipientId}`);
+            socket.emit('typing_start', { recipientId: recipientId });
+        }
+
+        function stopTyping() {
+            if (!socket || !socket.connected) {
+                alert('Please connect first');
+                return;
+            }
+
+            const recipientId = document.getElementById('recipientId').value.trim();
+            if (!recipientId) {
+                alert('Please enter recipient ID');
+                return;
+            }
+
+            log(`⏹️ Stopping typing indicator for ${recipientId}`);
+            socket.emit('typing_stop', { recipientId: recipientId });
+        }
+
+        async function refreshOnlineUsers() {
+            try {
+                const response = await fetch('/api/v1/chat/online-users');
+                const data = await response.json();
+                
+                if (data.success) {
+                    onlineUsers = data.connectedUsers;
+                    displayOnlineUsers();
+                    log(`🔄 Found ${data.totalConnected} online users`, 'success');
+                } else {
+                    log(`❌ Failed to get online users: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                log(`❌ Error fetching online users: ${error.message}`, 'error');
+            }
+        }
+
+        function displayOnlineUsers() {
+            const container = document.getElementById('onlineUsers');
+            container.innerHTML = '';
+            
+            onlineUsers.forEach(user => {
+                const userDiv = document.createElement('div');
+                userDiv.className = 'user-item';
+                userDiv.textContent = `${user.displayName} (${user.email})`;
+                userDiv.title = `ID: ${user.userId}\nTenant: ${user.tenantId}`;
+                userDiv.onclick = () => {
+                    document.getElementById('recipientId').value = user.userId;
+                    log(`👤 Selected recipient: ${user.displayName} (${user.userId})`, 'success');
+                };
+                container.appendChild(userDiv);
+            });
+        }
+
+        function clearLog() {
+            document.getElementById('eventLog').innerHTML = '';
+        }
+
+        // Auto-connect if token is in URL
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('token');
+            if (token) {
+                document.getElementById('token').value = token;
+                log('🔑 Token found in URL, ready to connect');
+            }
+        };
+    </script>
+</body>
+</html> 
