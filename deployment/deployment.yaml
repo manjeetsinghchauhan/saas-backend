@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saas-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: saas-backend
+  template:
+    metadata:
+      labels:
+        app: saas-backend
+    spec:
+      containers:
+        - name: saas-backend
+          # Update this with your ECR image URI after building and pushing
+          # Format: <AWS_ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/saas-backend:v1
+          # Example: 123456789012.dkr.ecr.ap-south-1.amazonaws.com/saas-backend:v1
+          image: 726271906587.dkr.ecr.ap-south-1.amazonaws.com/saas-backend:v2
+          imagePullPolicy: Always  # Always pull latest image, even if tag is same
+          ports:
+            - containerPort: 4000
+          env:
+            # Database Configuration
+            - name: DB_HOST
+              value: "saaspoc.c7cwy4m08h0n.ap-south-1.rds.amazonaws.com"  # Update with your PostgreSQL service name
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "saas_poc"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: saas-backend-secrets
+                  key: db-password
+            # Server Configuration
+            - name: PORT
+              value: "4000"
+            - name: HOST
+              value: "0.0.0.0"
+            # JWT Configuration
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: saas-backend-secrets
+                  key: jwt-secret
+          # Health check (optional but recommended)
+          # livenessProbe:
+          #   httpGet:
+          #     path: /api/v1/health
+          #     port: 4000
+          #   initialDelaySeconds: 30
+          #   periodSeconds: 10
+          # readinessProbe:
+          #   httpGet:
+          #     path: /api/v1/health
+          #     port: 4000
+          #   initialDelaySeconds: 10
+          #   periodSeconds: 5
+

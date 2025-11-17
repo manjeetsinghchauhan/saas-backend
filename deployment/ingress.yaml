@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: saas-backend
+  annotations:
+    # NGINX Ingress Controller annotations
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # For cert-manager (if using TLS later):
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx  # Use NGINX ingress controller
+  # No host specified - allows access via LoadBalancer IP directly
+  # Access via: http://<LOAD_BALANCER_IP>/
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: saas-backend
+                port:
+                  number: 80
+  # Note: TLS/HTTPS typically requires a hostname. If you add a host later, uncomment:
+  # tls:
+  #   - hosts:
+  #       - your-domain.com
+  #     secretName: saas-backend-tls
+
