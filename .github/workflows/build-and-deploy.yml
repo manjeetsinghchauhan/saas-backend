@@ -1,4 +1,4 @@
-name: Build and Push to ECR
+name: Build, Push to ECR, and Deploy to EKS
 
 on:
   push:
@@ -12,10 +12,14 @@ env:
   AWS_REGION: ap-south-1
   IMAGE_NAME: saas-backend
   ECR_REPOSITORY: saas-backend
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}  # Set this in GitHub Secrets
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      image-uri: ${{ steps.image-uri.outputs.uri }}
+      image-tag: ${{ steps.image-tag.outputs.tag }}
     
     steps:
       - name: Checkout code
@@ -36,7 +40,9 @@ jobs:
         id: image-tag
         run: |
           if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
-            echo "tag=latest" >> $GITHUB_OUTPUT
+            # Use commit SHA for unique tags on main branch
+            TAG="${GITHUB_SHA:0:7}"
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
@@ -46,14 +52,91 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
         run: |
+          # Build the image
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          
+          # Also tag as 'latest' and 'v1' for convenience
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:v1
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:v1
+          
+          echo "✅ Image pushed successfully!"
           echo "Image URI: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-      - name: Update deployment.yaml (optional)
+      - name: Set image URI output
+        id: image-uri
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
         run: |
-          echo "Image pushed: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:v1"
-          echo "Update deployment.yaml with the above image URI"
+          echo "uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-to-eks:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Install AWS CLI
+        run: |
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Verify kubectl connection
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+
+      - name: Update deployment.yaml with new image
+        run: |
+          # Update the image in deployment.yaml temporarily for this deployment
+          # Match the image line that contains the ECR URI pattern
+          sed -i "s|image:.*dkr\.ecr\..*|image: ${{ needs.build-and-push.outputs.image-uri }}|g" deployment/deployment.yaml
+          echo "✅ Updated deployment.yaml with image: ${{ needs.build-and-push.outputs.image-uri }}"
+          # Verify the update
+          grep "image:" deployment/deployment.yaml | head -1
+
+      - name: Apply Kubernetes manifests
+        run: |
+          # Apply deployment, service, and ingress
+          kubectl apply -f deployment/deployment.yaml
+          kubectl apply -f deployment/service.yaml
+          kubectl apply -f deployment/ingress.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/saas-backend -n default || kubectl rollout status deployment/saas-backend
+          echo "✅ Deployment successful!"
+
+      - name: Verify deployment
+        run: |
+          echo "📋 Deployment details:"
+          kubectl get deployment saas-backend -n default || kubectl get deployment saas-backend
+          echo ""
+          echo "📦 Pods:"
+          kubectl get pods -l app=saas-backend -n default || kubectl get pods -l app=saas-backend
+          echo ""
+          echo "🌐 Service:"
+          kubectl get service saas-backend -n default || kubectl get service saas-backend
 
