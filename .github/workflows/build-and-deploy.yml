@@ -52,8 +52,19 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.image-tag.outputs.tag }}
         run: |
+          set -e  # Exit on any error
+          
+          echo "🏗️ Building Docker image..."
           # Build the image
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          if docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .; then
+            echo "✅ Docker image built successfully"
+          else
+            echo "❌ Error: Docker build failed"
+            exit 1
+          fi
+          
+          echo "📤 Pushing image to ECR..."
+          # Push the main tag
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           
           # Also tag as 'latest' and 'v1' for convenience
@@ -93,41 +104,94 @@ jobs:
         with:
           version: 'latest'
 
-      - name: Install AWS CLI
+      - name: Install/Update AWS CLI
         run: |
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          unzip awscliv2.zip
-          sudo ./aws/install
+          unzip -o awscliv2.zip  # -o flag overwrites existing files
+          sudo ./aws/install --update
+          rm -f awscliv2.zip  # Clean up
 
       - name: Configure kubectl for EKS
         run: |
-          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          echo "🔧 Configuring kubectl for EKS cluster: ${{ env.EKS_CLUSTER_NAME }}"
+          if aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}; then
+            echo "✅ kubectl configured successfully"
+          else
+            echo "❌ Error: Failed to configure kubectl for EKS cluster"
+            echo "Please verify:"
+            echo "  - EKS_CLUSTER_NAME secret is set correctly"
+            echo "  - AWS credentials have EKS permissions"
+            echo "  - Cluster exists in region ${{ env.AWS_REGION }}"
+            exit 1
+          fi
 
       - name: Verify kubectl connection
         run: |
-          kubectl cluster-info
-          kubectl get nodes
+          echo "🔍 Verifying kubectl connection to EKS cluster..."
+          if kubectl cluster-info; then
+            echo "✅ Successfully connected to cluster"
+          else
+            echo "❌ Error: Failed to connect to cluster"
+            exit 1
+          fi
+          
+          if kubectl get nodes; then
+            echo "✅ Cluster nodes are accessible"
+          else
+            echo "❌ Error: Failed to retrieve cluster nodes"
+            exit 1
+          fi
 
       - name: Update deployment.yaml with new image
         run: |
           # Update the image in deployment.yaml temporarily for this deployment
           # Match the image line that contains the ECR URI pattern
-          sed -i "s|image:.*dkr\.ecr\..*|image: ${{ needs.build-and-push.outputs.image-uri }}|g" deployment/deployment.yaml
-          echo "✅ Updated deployment.yaml with image: ${{ needs.build-and-push.outputs.image-uri }}"
+          if [ ! -f deployment/deployment.yaml ]; then
+            echo "❌ Error: deployment/deployment.yaml not found"
+            exit 1
+          fi
+          
+          IMAGE_URI="${{ needs.build-and-push.outputs.image-uri }}"
+          sed -i "s|image:.*dkr\.ecr\..*|image: ${IMAGE_URI}|g" deployment/deployment.yaml
+          
           # Verify the update
-          grep "image:" deployment/deployment.yaml | head -1
+          if grep -q "image: ${IMAGE_URI}" deployment/deployment.yaml; then
+            echo "✅ Updated deployment.yaml with image: ${IMAGE_URI}"
+            grep "image:" deployment/deployment.yaml | head -1
+          else
+            echo "❌ Error: Failed to update deployment.yaml"
+            exit 1
+          fi
 
       - name: Apply Kubernetes manifests
         run: |
           # Apply deployment, service, and ingress
+          echo "📦 Applying Kubernetes manifests..."
+          
+          if [ ! -f deployment/deployment.yaml ] || [ ! -f deployment/service.yaml ] || [ ! -f deployment/ingress.yaml ]; then
+            echo "❌ Error: One or more manifest files are missing"
+            exit 1
+          fi
+          
           kubectl apply -f deployment/deployment.yaml
           kubectl apply -f deployment/service.yaml
           kubectl apply -f deployment/ingress.yaml
+          
+          echo "✅ All manifests applied successfully"
 
       - name: Wait for rollout
         run: |
-          kubectl rollout status deployment/saas-backend -n default || kubectl rollout status deployment/saas-backend
-          echo "✅ Deployment successful!"
+          # Try with namespace first, fallback to default namespace
+          if kubectl rollout status deployment/saas-backend --timeout=5m -n default 2>/dev/null; then
+            echo "✅ Deployment rollout successful!"
+          elif kubectl rollout status deployment/saas-backend --timeout=5m 2>/dev/null; then
+            echo "✅ Deployment rollout successful!"
+          else
+            echo "❌ Error: Deployment rollout failed or timed out"
+            kubectl rollout status deployment/saas-backend -n default || kubectl rollout status deployment/saas-backend || true
+            kubectl describe deployment saas-backend -n default || kubectl describe deployment saas-backend || true
+            exit 1
+          fi
 
       - name: Verify deployment
         run: |
