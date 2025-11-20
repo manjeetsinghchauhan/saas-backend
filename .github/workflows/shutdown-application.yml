@@ -1,0 +1,77 @@
+name: Shutdown Application
+
+on:
+  workflow_dispatch:  # Manual trigger only
+    inputs:
+      confirm:
+        description: 'Type "DELETE" to confirm shutdown'
+        required: true
+        type: string
+
+env:
+  AWS_REGION: ap-south-1
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  shutdown:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.confirm == 'DELETE' }}
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Delete all saas-backend resources
+        run: |
+          echo "🗑️ Deleting saas-backend deployment..."
+          kubectl delete deployment saas-backend -n default || echo "Deployment not found"
+          
+          echo "🗑️ Deleting saas-backend service..."
+          kubectl delete service saas-backend -n default || echo "Service not found"
+          
+          echo "🗑️ Deleting saas-backend ingress..."
+          kubectl delete ingress saas-backend -n default || echo "Ingress not found"
+          
+          echo "🗑️ Deleting any remaining pods..."
+          kubectl delete pods -l app=saas-backend -n default || echo "No pods found"
+
+      - name: Verify deletion
+        run: |
+          echo "✅ Checking if resources are deleted..."
+          echo ""
+          echo "Deployments:"
+          kubectl get deployment saas-backend -n default 2>&1 || echo "✅ Deployment deleted"
+          echo ""
+          echo "Services:"
+          kubectl get service saas-backend -n default 2>&1 || echo "✅ Service deleted"
+          echo ""
+          echo "Pods:"
+          kubectl get pods -l app=saas-backend -n default 2>&1 || echo "✅ All pods deleted"
+          echo ""
+          echo "🎉 Application shutdown complete!"
+
+      - name: Cost saving summary
+        run: |
+          echo "💰 Cost Savings Activated:"
+          echo "  ✅ All pods deleted - No compute charges"
+          echo "  ✅ Service removed - No load balancer charges"
+          echo "  ⚠️  EKS cluster still running (if you want to delete cluster, do it manually)"
+          echo "  ⚠️  ECR images still stored (minimal cost, can delete manually if needed)"
+          echo ""
+          echo "To completely stop ALL AWS charges:"
+          echo "  1. Delete EKS cluster: aws eks delete-cluster --name ${EKS_CLUSTER_NAME}"
+          echo "  2. Delete ECR images: aws ecr batch-delete-image --repository-name saas-backend --image-ids imageTag=latest"
+          echo "  3. Delete any associated resources (RDS, S3, etc.)"
