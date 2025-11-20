@@ -1,0 +1,98 @@
+name: Rollback Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: 'Revision number to rollback to (leave empty for previous version)'
+        required: false
+        type: string
+      image-tag:
+        description: 'Specific image tag to deploy (alternative to revision rollback)'
+        required: false
+        type: string
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: saas-backend
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Rollback using revision number
+        if: ${{ github.event.inputs.revision != '' && github.event.inputs.image-tag == '' }}
+        run: |
+          echo "🔄 Rolling back to revision ${{ github.event.inputs.revision }}"
+          kubectl rollout undo deployment/saas-backend --to-revision=${{ github.event.inputs.revision }} -n default
+          kubectl rollout status deployment/saas-backend --timeout=5m -n default
+
+      - name: Rollback to previous version
+        if: ${{ github.event.inputs.revision == '' && github.event.inputs.image-tag == '' }}
+        run: |
+          echo "🔄 Rolling back to previous version"
+          kubectl rollout undo deployment/saas-backend -n default
+          kubectl rollout status deployment/saas-backend --timeout=5m -n default
+
+      - name: Deploy specific image tag
+        if: ${{ github.event.inputs.image-tag != '' }}
+        run: |
+          echo "🔄 Deploying specific image tag: ${{ github.event.inputs.image-tag }}"
+          
+          # Login to ECR
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            docker login --username AWS --password-stdin $(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          IMAGE_URI="${ECR_REGISTRY}/${{ env.ECR_REPOSITORY }}:${{ github.event.inputs.image-tag }}"
+          
+          # Verify image exists
+          if aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=${{ github.event.inputs.image-tag }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+            echo "✅ Image found in ECR"
+            kubectl set image deployment/saas-backend saas-backend=${IMAGE_URI} -n default
+            kubectl rollout status deployment/saas-backend --timeout=5m -n default
+          else
+            echo "❌ Error: Image tag ${{ github.event.inputs.image-tag }} not found in ECR"
+            exit 1
+          fi
+
+      - name: View deployment history
+        run: |
+          echo "📋 Deployment history:"
+          kubectl rollout history deployment/saas-backend -n default
+          echo ""
+          echo "📦 Current pods:"
+          kubectl get pods -l app=saas-backend -n default
+          echo ""
+          echo "🖼️ Current image:"
+          kubectl get deployment saas-backend -n default -o jsonpath='{.spec.template.spec.containers[0].image}'
+          echo ""
+
+      - name: Verify rollback
+        run: |
+          echo "🔍 Verifying rollback..."
+          if kubectl get pods -l app=saas-backend -n default | grep -q "Running"; then
+            echo "✅ Rollback successful! Pods are running"
+          else
+            echo "❌ Warning: Some pods may not be running"
+            kubectl get pods -l app=saas-backend -n default
+            exit 1
+          fi
